@@ -1,0 +1,12 @@
+# Secrets & keys — never commit
+.env
+*.keypair.json
+wallet.json
+id.json
+
+# Build / deps
+node_modules/
+dist/
+
+# Run artifacts (lifecycle logs are committed deliberately under logs/, see below)
+*.tmp
