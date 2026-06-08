@@ -39,6 +39,40 @@ Requires (see `.env.example`): a high-performance RPC, a Yellowstone gRPC
 endpoint (SolInfra bounty credits / Helius / Triton), a funded mainnet wallet for
 tips/fees, and a free OpenAI-compatible AI key (default: Groq).
 
+## Operational Q&A (required)
+
+> Answers below are correct in principle; bracketed `[from logs: …]` values get
+> filled with real numbers from `logs/lifecycle.jsonl` after the mainnet run.
+
+**Q1 — What does the delta between `processed_at` and `confirmed_at` tell you
+about network health?**
+It measures how long the cluster took to reach a 2/3 supermajority of votes
+(`confirmed`) after the transaction was first included by a leader
+(`processed`). A small, stable delta (typically ~1–2 slots / a few hundred ms)
+means healthy vote propagation and little fork contention. A large or growing
+delta signals congestion, fork churn, or vote lag — finality is slowing and
+landing is riskier. `[from logs: median Δ = … ms; worst Δ = … ms during the
+fault-injected runs]`.
+
+**Q2 — Why should you never use `finalized` commitment when fetching a blockhash
+for a time-sensitive transaction?**
+A blockhash is only valid for ~150 slots (~60s). A `finalized` blockhash is
+already ~31+ slots behind the chain tip the moment you fetch it, so you've burned
+~20% of the validity window before even building the transaction. Add network
+latency and a retry or two and you hit "blockhash not found / block height
+exceeded." Fetching at `confirmed` (or `processed`) starts you near the tip and
+maximizes the window in which the tx can actually land. `[from logs: fault-
+injected runs #3/#7 show the expiry failure + agent-driven refresh recovery]`.
+
+**Q3 — What happens to your bundle if the Jito leader skips their slot?**
+Jito bundles are only executed when a Jito-Solana leader builds that slot's
+block. If that leader skips/misses their slot, the bundle is **not** included and
+is **not** carried over to the next leader — it simply doesn't land (bundles are
+all-or-nothing). Because the tip is paid only on inclusion, you aren't charged,
+but you must resubmit targeting the next Jito leader window (we use
+`getNextScheduledLeader` to time this). `[from logs: run(s) where the bundle did
+not land and the agent retried into the next leader window]`.
+
 ## Layout
 
 ```
