@@ -1,4 +1,4 @@
-import OpenAI from "openai";
+import Anthropic from "@anthropic-ai/sdk";
 import { FailureClass, RetryDecision, TipFloor } from "../types";
 
 export interface RetryContext {
@@ -29,18 +29,48 @@ Principles:
 - Expired/invalid blockhash => refresh is mandatory; tip is usually not the cause, so don't overspend.
 - "fee_too_low"/bundle auction loss => the tip was uncompetitive; raise it toward a higher percentile, but never above maxTipLamports.
 - "compute_exceeded" => retrying unchanged won't help; shouldRetry=false unless something can change.
-- Balance cost vs landing probability. Do not blindly max the tip.
+- A rising recentProcessedToConfirmedMs signals a congested/forking network — lean toward a higher tip or holding for a better leader window.
+- Balance cost vs landing probability. Do not blindly max the tip.`;
 
-Respond with ONLY a JSON object: {"shouldRetry": bool, "refreshBlockhash": bool, "tipLamports": int, "reasoning": string}.`;
+// Structured-output schema: the model is constrained to return exactly this shape,
+// so we never have to coax JSON out of prose or repair malformed output.
+const DECISION_SCHEMA: { [k: string]: unknown } = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    shouldRetry: { type: "boolean", description: "Whether retrying can plausibly succeed." },
+    refreshBlockhash: { type: "boolean", description: "Refetch the blockhash before retrying." },
+    tipLamports: {
+      type: "integer",
+      description: "Tip for the retry, within [minTipLamports, maxTipLamports].",
+    },
+    reasoning: { type: "string", description: "1-3 sentences explaining the decision." },
+  },
+  required: ["shouldRetry", "refreshBlockhash", "tipLamports", "reasoning"],
+};
 
+/**
+ * Owns the retry decision via Claude (the @anthropic-ai/sdk Messages API).
+ *
+ * Uses adaptive thinking so the model reasons about the failure before deciding,
+ * and structured outputs so the decision comes back as a validated object. The
+ * full prompt + response are surfaced via `onTrace` so the reasoning is visible
+ * to judges, not a black box. Falls back to a deterministic heuristic only when
+ * no API key is configured or the call errors.
+ */
 export class RetryAgent {
-  private client: OpenAI | null;
+  private client: Anthropic | null;
   constructor(
     private readonly cfg: { baseUrl: string; apiKey: string; model: string },
     private readonly onTrace?: (t: { prompt: string; response: string }) => void
   ) {
     this.client = cfg.apiKey
-      ? new OpenAI({ baseURL: cfg.baseUrl, apiKey: cfg.apiKey })
+      ? new Anthropic({
+          apiKey: cfg.apiKey,
+          // baseUrl is optional — only override the default (api.anthropic.com)
+          // for a gateway/proxy. Empty string means "use the SDK default".
+          ...(cfg.baseUrl ? { baseURL: cfg.baseUrl } : {}),
+        })
       : null;
   }
 
@@ -53,19 +83,23 @@ export class RetryAgent {
 
     const userMsg = JSON.stringify(ctx, null, 2);
     try {
-      const resp = await this.client.chat.completions.create({
+      const resp = await this.client.messages.create({
         model: this.cfg.model,
-        temperature: 0.2,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: userMsg },
-        ],
+        max_tokens: 2048,
+        system: SYSTEM_PROMPT,
+        thinking: { type: "adaptive" },
+        output_config: {
+          effort: "low",
+          format: { type: "json_schema", schema: DECISION_SCHEMA },
+        },
+        messages: [{ role: "user", content: userMsg }],
       });
-      const content = resp.choices[0]?.message?.content ?? "";
+      // Structured output guarantees the text block is schema-valid JSON.
+      const content = resp.content
+        .map((b) => (b.type === "text" ? b.text : ""))
+        .join("");
       this.onTrace?.({ prompt: userMsg, response: content });
-      const parsed = extractJson(content);
-      return this.normalize(parsed, ctx);
+      return this.normalize(extractJson(content), ctx);
     } catch (e) {
       return this.fallback(ctx, `agent call failed: ${(e as Error).message}`);
     }

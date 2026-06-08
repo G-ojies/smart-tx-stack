@@ -38,9 +38,11 @@ export function loadConfig(): Config {
         : "https://mainnet.block-engine.jito.wtf"),
     walletKeypairPath: process.env.WALLET_KEYPAIR_PATH || "./wallet.json",
     ai: {
-      baseUrl: process.env.AI_BASE_URL || "https://api.groq.com/openai/v1",
-      apiKey: process.env.AI_API_KEY || "",
-      model: process.env.AI_MODEL || "llama-3.3-70b-versatile",
+      // Default: Anthropic (api.anthropic.com). Leave AI_BASE_URL empty to use
+      // the SDK default; set it only to route through a gateway/proxy.
+      baseUrl: process.env.AI_BASE_URL || "",
+      apiKey: process.env.AI_API_KEY || process.env.ANTHROPIC_API_KEY || "",
+      model: process.env.AI_MODEL || "claude-opus-4-8",
     },
     maxTipLamports: parseInt(process.env.MAX_TIP_LAMPORTS || "200000", 10),
   };

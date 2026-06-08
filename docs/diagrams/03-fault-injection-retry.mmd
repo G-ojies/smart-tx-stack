@@ -1,0 +1,15 @@
+flowchart TD
+    START["Attempt N"] --> FI{fault-injected<br/>attempt?}
+    FI -->|yes| STALE["stale(): fetch hash,<br/>WAIT OUT the real<br/>validity window"]
+    FI -->|no| FRESH["use current blockhash"]
+    STALE --> SUBMIT["Submit Jito bundle"]
+    FRESH --> SUBMIT
+    SUBMIT --> TRACK["Track via stream<br/>(45s window)"]
+    TRACK --> CONF{confirmed?}
+    CONF -->|yes| LANDED["Record: landed to done"]
+    CONF -->|no| DIAG["diagnose() to<br/>real failure class<br/>(from chain state)"]
+    DIAG --> ASK["Agent.decide(context)"]
+    ASK --> DEC{shouldRetry?}
+    DEC -->|no| STOP["Record: stop<br/>(non-transient)"]
+    DEC -->|yes| APPLY["refreshBlockhash? to fresh()<br/>tip = agent.newTip"]
+    APPLY --> START

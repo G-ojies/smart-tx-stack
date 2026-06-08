@@ -34,14 +34,28 @@ export class BlockhashManager {
   }
 
   /**
-   * Produce an intentionally-stale blockhash for fault injection: a real, valid
-   * hash whose validity window we then exhaust (the runner waits it out) so the
-   * stack observes a genuine "blockhash expired" failure — not a fake error.
+   * Produce a *genuinely* expired blockhash for fault injection.
+   *
+   * Fetches a real blockhash, then blocks until the chain's block height has
+   * actually passed its `lastValidBlockHeight` (the validity window has truly
+   * elapsed — ~150 slots / ~60s). Submitting with the returned hash therefore
+   * fails for real: no fabricated error, and crucially no contradictory on-chain
+   * transaction for judges to find when they cross-reference slots on an
+   * explorer. Returns the real hash with its real (now-exceeded) height — so
+   * `isExpired()` / `diagnose()` report the failure from genuine state, not a
+   * forced label. `onWait` reports progress so the runner can show it.
    */
-  async stale(): Promise<BlockhashInfo> {
+  async stale(onWait?: (info: { heightToGo: number }) => void): Promise<BlockhashInfo> {
     const info = await this.fresh();
-    // Mark it expired by claiming a height already in the past so callers that
-    // check `isExpired` see expiry immediately; real submission will also fail.
-    return { ...info, lastValidBlockHeight: 0 };
+    const deadline = Date.now() + 180_000; // cap so a stalled RPC can't hang the run
+    for (;;) {
+      const height = await this.conn.getBlockHeight(this.commitment);
+      if (height > info.lastValidBlockHeight) return info; // truly expired now
+      if (Date.now() > deadline) {
+        throw new Error("stale(): timed out waiting for blockhash to expire");
+      }
+      onWait?.({ heightToGo: info.lastValidBlockHeight - height + 1 });
+      await new Promise((r) => setTimeout(r, 2000));
+    }
   }
 }

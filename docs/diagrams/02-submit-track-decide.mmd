@@ -1,0 +1,29 @@
+sequenceDiagram
+    participant R as Retry Engine
+    participant T as Tip Engine
+    participant B as Blockhash Mgr
+    participant S as Submitter to Jito
+    participant Y as Yellowstone Stream
+    participant L as Lifecycle Tracker
+    participant A as AI Agent (Claude)
+
+    R->>T: fetch live tip floor
+    T-->>R: percentiles to computeTip()
+    R->>B: fresh() @confirmed
+    B-->>R: blockhash + lastValidBlockHeight
+    R->>S: submit bundle (tx + tip tx)
+    S-->>R: bundleId, signature, submitSlot
+    R->>L: track(signature, timeout 45s)
+    Y-->>L: tx seen to processed + landed slot
+    Y-->>L: slot CONFIRMED >= landed to confirmed
+    Y-->>L: slot FINALIZED >= landed to finalized
+    alt confirmed in window
+        L-->>R: landed to log record, done
+    else no confirmation / error
+        L-->>R: stages empty
+        R->>R: diagnose() to failure class (from chain state)
+        R->>A: decide(context)
+        A-->>R: shouldRetry, refreshBlockhash, tip, reasoning
+        R->>B: refresh() if instructed
+        R->>R: tip = newTip; retry or stop
+    end

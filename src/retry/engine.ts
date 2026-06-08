@@ -26,6 +26,9 @@ export interface ExecuteOutcome {
 
 const MIN_TIP = 1000;
 
+/** Most recent real processed→confirmed latency, fed back to the agent as a
+ *  live network-health signal (null until the first bundle confirms). */
+
 /**
  * Orchestrates an attempt → (failure → agent decides → apply → retry) loop.
  * The retry decision is owned by the AI agent, not hardcoded here: this engine
@@ -44,6 +47,8 @@ export class RetryEngine {
     private readonly maxTipLamports: number
   ) {}
 
+  private lastProcToConfMs: number | null = null;
+
   async execute(opts: ExecuteOptions): Promise<ExecuteOutcome> {
     const timeoutMs = opts.timeoutMs ?? 45_000;
     const tipAccounts = await this.jito.getTipAccounts();
@@ -55,7 +60,14 @@ export class RetryEngine {
 
     for (let attempt = 1; attempt <= opts.maxAttempts; attempt++) {
       const faultInjected = opts.faultInjectAttempt === attempt;
-      if (faultInjected) bhInfo = await this.bh.stale(); // genuine expired blockhash
+      if (faultInjected) {
+        // Genuinely age the blockhash until its window has truly elapsed, so the
+        // failure observed below is real (and leaves no on-chain tx to contradict it).
+        bhInfo = await this.bh.stale(({ heightToGo }) =>
+          process.stdout.write(`\r[fault] waiting for blockhash to expire (${heightToGo} blocks to go)…   `)
+        );
+        process.stdout.write("\n");
+      }
 
       let failure: FailureClass = "none";
       let bundleId: string | null = null;
@@ -71,12 +83,20 @@ export class RetryEngine {
         stages = await tracking;
 
         if (stages.confirmedAt == null && stages.finalizedAt == null) {
-          // Never confirmed within the window.
-          failure = faultInjected ? "expired_blockhash" : await this.diagnose(bhInfo);
+          // Never confirmed within the window — derive the real cause from
+          // on-chain state. For fault-injected runs the blockhash is genuinely
+          // expired by now, so this honestly returns "expired_blockhash"; we
+          // never assert a failure the chain didn't actually exhibit.
+          failure = await this.diagnose(bhInfo);
         }
       } catch (e) {
         rawError = (e as Error).message;
-        failure = faultInjected ? "expired_blockhash" : classifyError(e);
+        // Classify the real thrown error; fall back to on-chain diagnosis when
+        // the message alone is inconclusive (e.g. Jito accepted then dropped).
+        failure = classifyError(e);
+        if (failure === "unknown" || failure === "none") {
+          failure = await this.diagnose(bhInfo);
+        }
       }
 
       const landed = failure === "none";
@@ -93,7 +113,7 @@ export class RetryEngine {
           minTipLamports: MIN_TIP,
           maxTipLamports: this.maxTipLamports,
           slotsUntilNextLeader: await this.slotsUntilLeader(),
-          recentProcessedToConfirmedMs: null,
+          recentProcessedToConfirmedMs: this.lastProcToConfMs,
           blockhashAgeSlots: null,
         };
         decision = await this.agent.decide(ctx);
@@ -102,7 +122,12 @@ export class RetryEngine {
       records.push(
         this.record(opts.label, attempt, bundleId, signature, tip, bhInfo.fetchedAtSlot, stages, failure, faultInjected, decision)
       );
-      this.logger.log(records[records.length - 1]);
+      const latest = records[records.length - 1];
+      // Remember a real processed→confirmed delta to feed the agent next time.
+      if (latest.latencyMs.processedToConfirmed != null) {
+        this.lastProcToConfMs = latest.latencyMs.processedToConfirmed;
+      }
+      this.logger.log(latest);
 
       if (landed) return { landed: true, attempts: attempt, records };
       if (!decision || !decision.shouldRetry) break;

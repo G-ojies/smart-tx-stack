@@ -1,0 +1,38 @@
+flowchart TB
+    subgraph AI["AI Decision Plane"]
+        AGENT["AI Agent (Claude)<br/>owns the retry decision<br/>in: failure class, raw error, live tip floor,<br/>slots-until-leader, proc to conf latency, attempt#<br/>out: shouldRetry · refreshBlockhash · tip · reasoning"]
+    end
+    subgraph ORCH["Orchestration"]
+        ENGINE["Retry Engine<br/>attempt to observe to (fail?) ask agent to apply to loop<br/>executes only what the agent returns"]
+    end
+    subgraph CORE["Core Transaction Stack"]
+        TIP["Tip Engine<br/>live tip-floor percentiles to dynamic tip"]
+        SUB["Submitter<br/>v0 tx to Jito bundle (+tip tx)"]
+        JITO["Jito Client<br/>tip accounts · next leader · send · result stream"]
+        BH["Blockhash Mgr<br/>fresh @confirmed · isExpired · stale (genuine)"]
+    end
+    subgraph LIFE["Lifecycle Layer"]
+        TRACK["Tracker<br/>submitted to processed to confirmed to finalized"]
+        CLS["Classifier<br/>4 failure classes"]
+        LOG["JSONL Logger<br/>lifecycle.jsonl + agent-traces.jsonl"]
+    end
+    subgraph STREAM["Stream Layer"]
+        YS["Yellowstone gRPC<br/>reconnect + backpressure"]
+    end
+    EXTJITO["Jito Block Engine"]
+    EXTFLOOR["bundles.jito.wtf /tip_floor"]
+    CLUSTER["Solana cluster (mainnet)"]
+
+    AGENT <-->|failure context / decision| ENGINE
+    ENGINE --> SUB
+    ENGINE --> BH
+    ENGINE --> TRACK
+    ENGINE --> CLS
+    ENGINE --> LOG
+    SUB --> JITO
+    SUB --> TIP
+    TIP --> EXTFLOOR
+    JITO --> EXTJITO
+    YS --> TRACK
+    EXTJITO --> CLUSTER
+    YS --> CLUSTER
