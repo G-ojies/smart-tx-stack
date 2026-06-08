@@ -7,9 +7,11 @@ calculated tips**, tracks each transaction across **commitment lifecycle stages*
 classifies failures, and uses an **AI agent** to own a real operational decision
 (autonomous retry with fault injection).
 
-> **Status: work in progress.** Phase 0 (streaming foundation) is in. See
-> `SCOPE.md` for the full plan and `logs/` (added in Phase 5) for real lifecycle
-> evidence.
+> **Status: code complete, pending live run.** Phases 0–4 are implemented and
+> typecheck-clean (stream, submitter+tip engine, lifecycle tracker+classifier,
+> retry engine+fault injection, AI agent). The remaining step is executing real
+> mainnet bundles to produce `logs/lifecycle.jsonl` (needs Yellowstone access, a
+> funded mainnet wallet, and an AI key). See `SCOPE.md` for the full plan.
 
 ## Architecture (layers)
 
