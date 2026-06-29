@@ -20,7 +20,7 @@ export interface Config {
   yellowstoneToken: string | undefined;
   jitoBlockEngineUrl: string;
   walletKeypairPath: string;
-  ai: { baseUrl: string; apiKey: string; model: string };
+  ai: { provider: "anthropic" | "openai"; baseUrl: string; apiKey: string; model: string };
   maxTipLamports: number;
 }
 
@@ -38,8 +38,19 @@ export function loadConfig(): Config {
         : "https://mainnet.block-engine.jito.wtf"),
     walletKeypairPath: process.env.WALLET_KEYPAIR_PATH || "./wallet.json",
     ai: {
-      // Default: Anthropic (api.anthropic.com). Leave AI_BASE_URL empty to use
-      // the SDK default; set it only to route through a gateway/proxy.
+      // Two providers are supported so the agent can run on a *free* key:
+      //   - "anthropic" (default): Claude via @anthropic-ai/sdk.
+      //   - "openai":  any OpenAI-compatible Chat Completions endpoint —
+      //                e.g. Groq, Google Gemini (OpenAI-compat), or OpenRouter,
+      //                all of which offer a free tier. Set AI_PROVIDER=openai,
+      //                AI_BASE_URL to the provider's /v1 base, AI_API_KEY, AI_MODEL.
+      // Auto-detect: if AI_PROVIDER is unset but AI_BASE_URL points somewhere
+      // other than Anthropic, assume an OpenAI-compatible endpoint.
+      provider:
+        (process.env.AI_PROVIDER as "anthropic" | "openai") ||
+        (process.env.AI_BASE_URL && !/anthropic\.com/.test(process.env.AI_BASE_URL)
+          ? "openai"
+          : "anthropic"),
       baseUrl: process.env.AI_BASE_URL || "",
       apiKey: process.env.AI_API_KEY || process.env.ANTHROPIC_API_KEY || "",
       model: process.env.AI_MODEL || "claude-opus-4-8",

@@ -49,60 +49,121 @@ const DECISION_SCHEMA: { [k: string]: unknown } = {
   required: ["shouldRetry", "refreshBlockhash", "tipLamports", "reasoning"],
 };
 
+export type AiProvider = "anthropic" | "openai";
+
+export interface AiConfig {
+  provider: AiProvider;
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+}
+
 /**
- * Owns the retry decision via Claude (the @anthropic-ai/sdk Messages API).
+ * Owns the retry decision via an LLM, with two interchangeable backends so the
+ * agent can run on a *free* key:
  *
- * Uses adaptive thinking so the model reasons about the failure before deciding,
- * and structured outputs so the decision comes back as a validated object. The
- * full prompt + response are surfaced via `onTrace` so the reasoning is visible
- * to judges, not a black box. Falls back to a deterministic heuristic only when
- * no API key is configured or the call errors.
+ *   - "anthropic": Claude via @anthropic-ai/sdk — adaptive thinking + structured
+ *     output (the decision comes back schema-validated, not coaxed from prose).
+ *   - "openai": any OpenAI-compatible Chat Completions endpoint (Groq, Gemini's
+ *     OpenAI-compat surface, OpenRouter — all have a free tier), called over
+ *     `fetch` with JSON-object response format. No extra dependency.
+ *
+ * Either way the full prompt + response are surfaced via `onTrace`, so the
+ * reasoning is visible to judges rather than a black box. Falls back to a
+ * deterministic heuristic only when no API key is configured or the call errors.
  */
 export class RetryAgent {
   private client: Anthropic | null;
+  private readonly provider: AiProvider;
   constructor(
-    private readonly cfg: { baseUrl: string; apiKey: string; model: string },
+    private readonly cfg: AiConfig,
     private readonly onTrace?: (t: { prompt: string; response: string }) => void
   ) {
-    this.client = cfg.apiKey
-      ? new Anthropic({
-          apiKey: cfg.apiKey,
-          // baseUrl is optional — only override the default (api.anthropic.com)
-          // for a gateway/proxy. Empty string means "use the SDK default".
-          ...(cfg.baseUrl ? { baseURL: cfg.baseUrl } : {}),
-        })
-      : null;
+    this.provider = cfg.provider ?? "anthropic";
+    this.client =
+      cfg.apiKey && this.provider === "anthropic"
+        ? new Anthropic({
+            apiKey: cfg.apiKey,
+            // baseUrl is optional — only override the default (api.anthropic.com)
+            // for a gateway/proxy. Empty string means "use the SDK default".
+            ...(cfg.baseUrl ? { baseURL: cfg.baseUrl } : {}),
+          })
+        : null;
   }
 
+  /** True when a real model (not the heuristic fallback) will be used. */
   get enabled(): boolean {
-    return this.client != null;
+    return Boolean(this.cfg.apiKey);
   }
 
   async decide(ctx: RetryContext): Promise<RetryDecision> {
-    if (!this.client) return this.fallback(ctx, "no AI key configured");
+    if (!this.cfg.apiKey) return this.fallback(ctx, "no AI key configured");
 
     const userMsg = JSON.stringify(ctx, null, 2);
     try {
-      const resp = await this.client.messages.create({
-        model: this.cfg.model,
-        max_tokens: 2048,
-        system: SYSTEM_PROMPT,
-        thinking: { type: "adaptive" },
-        output_config: {
-          effort: "low",
-          format: { type: "json_schema", schema: DECISION_SCHEMA },
-        },
-        messages: [{ role: "user", content: userMsg }],
-      });
-      // Structured output guarantees the text block is schema-valid JSON.
-      const content = resp.content
-        .map((b) => (b.type === "text" ? b.text : ""))
-        .join("");
+      const content =
+        this.provider === "openai"
+          ? await this.callOpenAICompatible(userMsg)
+          : await this.callAnthropic(userMsg);
       this.onTrace?.({ prompt: userMsg, response: content });
       return this.normalize(extractJson(content), ctx);
     } catch (e) {
       return this.fallback(ctx, `agent call failed: ${(e as Error).message}`);
     }
+  }
+
+  /** Claude via @anthropic-ai/sdk: adaptive thinking + structured output. */
+  private async callAnthropic(userMsg: string): Promise<string> {
+    const resp = await this.client!.messages.create({
+      model: this.cfg.model,
+      max_tokens: 2048,
+      system: SYSTEM_PROMPT,
+      thinking: { type: "adaptive" },
+      output_config: {
+        effort: "low",
+        format: { type: "json_schema", schema: DECISION_SCHEMA },
+      },
+      messages: [{ role: "user", content: userMsg }],
+    });
+    // Structured output guarantees the text block is schema-valid JSON.
+    return resp.content.map((b) => (b.type === "text" ? b.text : "")).join("");
+  }
+
+  /**
+   * Any OpenAI-compatible Chat Completions endpoint (Groq / Gemini / OpenRouter).
+   * Uses `response_format: json_object` to force a JSON reply; the schema is
+   * described inline since these providers don't all accept a JSON-schema arg.
+   */
+  private async callOpenAICompatible(userMsg: string): Promise<string> {
+    const base = (this.cfg.baseUrl || "https://api.openai.com/v1").replace(/\/+$/, "");
+    const resp = await fetch(`${base}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${this.cfg.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: this.cfg.model,
+        temperature: 0.2,
+        response_format: { type: "json_object" },
+        messages: [
+          {
+            role: "system",
+            content:
+              SYSTEM_PROMPT +
+              `\n\nReturn ONLY a JSON object with exactly these keys: ` +
+              `shouldRetry (boolean), refreshBlockhash (boolean), ` +
+              `tipLamports (integer), reasoning (string). No prose, no code fences.`,
+          },
+          { role: "user", content: userMsg },
+        ],
+      }),
+    });
+    if (!resp.ok) {
+      throw new Error(`OpenAI-compatible API ${resp.status}: ${await resp.text()}`);
+    }
+    const data: any = await resp.json();
+    return data?.choices?.[0]?.message?.content ?? "";
   }
 
   /** Clamp/validate the model's decision into a safe RetryDecision. */
