@@ -43,8 +43,11 @@ Requires (see `.env.example`): a high-performance RPC, a Yellowstone gRPC
 endpoint (SolInfra bounty credits / Helius / Triton), a funded wallet for
 tips/fees (~0.001 SOL for a 10-bundle run), and an AI key. The agent supports
 **two backends** so it can run for free: Anthropic/Claude, *or* any
-OpenAI-compatible endpoint (`AI_PROVIDER=openai`) — Groq, Gemini, or OpenRouter,
-all of which have a free tier.
+OpenAI-compatible endpoint (`AI_PROVIDER=openai`) — Groq, Gemini, OpenRouter, or
+NVIDIA (`build.nvidia.com`), all of which have a free tier. For NVIDIA set
+`AI_BASE_URL=https://integrate.api.nvidia.com/v1` with an `nvapi-...` key and the
+exact model id from the model's page (e.g. `deepseek-ai/deepseek-v3.1`); it gives
+free access to frontier models at ~40 req/min. See `.env.example` for all four.
 
 ## Operational Q&A (required)
 
